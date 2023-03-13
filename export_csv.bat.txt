@@ -1,0 +1,155 @@
+@echo off
+cd /d %~dp0
+
+setlocal
+
+set "columnlist=columnlist.txt"
+set "wherelist=wherelist.csv"
+
+rem cleanup sql files
+del /s *.sql
+
+if not exist "%columnlist%\*" (
+    if not exist "%columnlist%" (
+        echo %columnlist%を作成してください。
+        (echo tablename) > %columnlist%
+        exit /b 1
+    )
+)
+
+rem set tablename
+for /f "usebackq delims=: tokens=1*" %%a in (`findstr /n ".*" %columnlist% ^| findstr "^[1]:"`) do set tablename=%%b
+call :trim tablename %tablename%
+
+rem spool settings
+(
+    echo set echo off
+    echo set feedback off
+    echo set trimspool on
+    echo set linesize 32767
+    echo set pagesize 0
+    echo set termout off
+    echo set verify off
+    echo set recsep off
+    echo.
+) > %tablename%.sql
+
+for /f "usebackq delims=" %%a in (`type %columnlist% ^| find /c /v ""`) do (
+    rem line count < 2
+    if %%a lss 2 (
+        echo [%date% %time%] sql作成開始。テーブル名 : %tablename%
+        (
+            echo spool _%tablename%.sql
+            echo.
+            echo prompt spool %tablename%.csv
+            echo -- header
+            echo SELECT
+            echo   'SELECT ''^"' ^|^|
+            echo   LISTAGG^(COLUMN_NAME, '^"''' ^|^| CHR^(13^) ^|^| CHR^(10^) ^|^| '^|^| '',^"'^)
+            echo         WITHIN GROUP^(ORDER BY COLUMN_ID^) ^|^|
+            echo   '^"''' ^|^| CHR^(13^) ^|^| CHR^(10^) ^|^| 'FROM DUAL;'
+            echo FROM USER_TAB_COLUMNS
+            echo WHERE TABLE_NAME = UPPER^('%tablename%'^)
+            echo ORDER BY COLUMN_ID;
+            echo -- data
+            echo SELECT
+            echo   'SELECT ''^"'' ^|^| ' ^|^|
+            echo   LISTAGG^(COLUMN_NAME, CHR^(13^) ^|^| CHR^(10^) ^|^| '^|^| ''^",^"'' ^|^| '^)
+            echo         WITHIN GROUP^(ORDER BY COLUMN_ID^) ^|^|
+            echo   CHR^(13^) ^|^| CHR^(10^) ^|^| '^|^| ''^"'' FROM ' ^|^| UPPER^('%tablename%'^) ^|^|';'
+            echo FROM USER_TAB_COLUMNS
+            echo WHERE TABLE_NAME = UPPER^('%tablename%'^)
+            echo ORDER BY COLUMN_ID;
+            echo.
+            echo prompt spool off
+            echo.
+            echo spool off
+            echo @_%tablename%.sql
+            echo exit
+        ) >> %tablename%.sql
+        echo [%date% %time%] sql作成完了。
+        goto export_csv
+    ) else (
+        (
+            echo spool %tablename%.csv
+            echo.
+        ) >> %tablename%.sql
+    )
+)
+
+rem select ~ from tablename
+echo [%date% %time%] sql作成開始。テーブル名 : %tablename%
+for /f "usebackq delims=: tokens=1*" %%a in (`findstr /n ".*" %columnlist% ^| findstr "^[2]:"`) do (
+    set "q1='"%%b"' "
+    set "q2=^|^| %%b "
+)
+for /f "skip=2 delims=" %%i in (%columnlist%) do (
+    call :func_select_query %%i
+)
+(echo select %q1%from dual;) >> %tablename%.sql
+
+if not exist "%wherelist%\*" (
+    if exist "%wherelist%" (
+        for /f "usebackq delims=" %%a in (`type %wherelist% ^| find /c /v ""`) do (
+            if %%a lss 2 (
+                (echo select '^"' %q2%^|^| '^"' from %tablename%;) >> %tablename%.sql
+                goto spool_end
+            )
+        )
+    ) else (
+        (echo select '^"' %q2%^|^| '^"' from %tablename%;) >> %tablename%.sql
+        goto spool_end
+    )
+)
+
+rem where ~ and ...
+set column_num=0
+for /f "usebackq delims=: tokens=1*" %%a in (`findstr /n ".*" %wherelist% ^| findstr "^[1]:"`) do (
+    for %%i in (%%b) do (
+        rem col[0]=column_1, col[1]=column_2, ...
+        call set "col[%%column_num%%]=%%i = "
+        set /a column_num+=1
+    )
+)
+for /f "skip=1 tokens=* delims=," %%i in (%wherelist%) do (
+    set q3=
+    set column_num=0
+    for %%j in (%%i) do (
+        call :func_where_query %%j
+        set /a column_num+=1
+    )
+    call set "q3=%%q3%:*and=where%%"
+    (call echo select '^"' %q2%^|^| '^"' from %tablename% %%q3%%;) >> %tablename%.sql
+)
+
+:spool_end
+(
+    echo.
+    echo spool off
+    echo exit
+) >> %tablename%.sql
+echo [%date% %time%] sql作成完了。
+
+:export_csv
+echo [%date% %time%] csv出力を開始します。
+rem sqlplus -s user/pass@name @%tablename%.sql
+echo [%date% %time%] csv出力が完了しました。
+
+endlocal
+
+rem exit
+exit /b 0
+
+:trim
+    set %1=%2
+exit /b 0
+
+:func_select_query
+    set "q1=%q1%^|^| ',"%1"' "
+    set "q2=%q2%^|^| '","' ^|^| %1 "
+exit /b 0
+
+:func_where_query
+    call set "str=%%col[%column_num%]%%"
+    set "q3=%q3%and %str%'%1' "
+exit /b 0
